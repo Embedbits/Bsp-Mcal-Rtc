@@ -14,7 +14,17 @@ This README is the landing page and the **specification of the interface** (mast
 own README with everything that is specific to the family: the instances of the device, their settings and the status of
 the implementation.
 
-> **Status: design.** No implementation exists yet, the interface below is a proposal. Stories and branches follow.
+> **Status: STM32H5 implemented (branch `Dev/STM32H5`).** Clock source selection, adoption of an already
+> running calendar (no write to a calendar that is valid), initialization of a lost calendar, calendar
+> set/get, Unix time conversion, daylight saving, alarms A/B, the periodic wake-up timer, timestamp
+> register decoding, digital calibration, time shift, the RTC_OUT2 output, the RTC_REFIN reference clock
+> and backup registers (forwarded to Tamp) are implemented and unit tested on all 12 STM32H5 lines.
+> Integration tests run on NUCLEO-H563ZI, NUCLEO-H503RB and NUCLEO-H533RE. Not implemented yet: RTC_OUT1
+> and RTC_TS (PC13 has no GPIO alternate-function entry, so no pin table could be generated for it -
+> `Rtc_InitTimestampGpio` returns an error), the wake-up timer's sub-second clock resolution (ck_spre /
+> 1 Hz only), EXTI wake-up line wiring and the backup-domain-reset path of `ForceInit` - see Rtc.c for the
+> exact list. The module enables the backup domain write access itself through the Pwr module
+> (`Pwr_Set_BackupAccessActive`) in `Rtc_Init`.
 
 ---
 
@@ -59,7 +69,8 @@ things apart:
 
 Rules:
 
-1. `Rtc_Init` unlocks the backup domain, checks the clock source and the calendar. If the RTC runs with the requested
+1. `Rtc_Init` requests the write access to the backup domain from the Pwr module (an error of the Pwr module ends the call, the
+   module stays uninitialized), unlocks the RTC registers, checks the clock source and the calendar. If the RTC runs with the requested
    clock and the calendar is initialized, it **only adopts** the state (`Rtc_Get_TimeState` returns `RTC_TIME_VALID`)
    and keeps the alarms, the wake-up timer and the calendar untouched; with `ForceInit` it resets the backup domain and
    starts again. If the clock source is not ready within the timeout, the call returns an error and nothing is changed.
@@ -88,7 +99,7 @@ master.
 
 | Family | Branch | RTC | Backup registers | Status |
 |---|---|---|---|---|
-| STM32H5 | `Dev/STM32H5` | `RTC` + `TAMP`, calendar and binary mode, two alarms, 17-bit wake-up timer, timestamp, 0.95 ppm digital calibration, reference clock input, TrustZone and privilege protection | 32 (in `TAMP`) | planned (first) |
+| STM32H5 | `Dev/STM32H5` | `RTC` + `TAMP`, calendar and binary mode, two alarms, 17-bit wake-up timer, timestamp, 0.95 ppm digital calibration, reference clock input, TrustZone and privilege protection | 32 (in `TAMP`) | implemented (binary mode, the 17-bit wake-up timer resolution and TrustZone/privilege not yet, see the status note above) |
 | STM32U5 | `Dev/STM32U5` | `RTC` + `TAMP`, same IP generation as the H5 | 32 (in `TAMP`) | planned |
 | STM32L4, STM32G4 | `Dev/STM32L4`, `Dev/STM32G4` | `RTC` | 32 (in `RTC`) | planned |
 | STM32H7, STM32F7 | `Dev/STM32H7`, `Dev/STM32F7` | `RTC` | 32 (in `RTC`) | planned |
@@ -231,6 +242,13 @@ rtc_BackupData_t bootCnt = 0u;
 - **Clock source and reset.** The source is selected once; a change needs a reset of the backup domain and loses the
   calendar and the backup registers of the families where the reset erases them. `Rtc_Init` with a different source than
   the running one returns an error unless `ForceInit` is set.
+- **Backup domain write access.** `Rtc_Init` takes one reference of the access through `Pwr_Set_BackupAccessActive` and
+  holds it while the module is initialized (all the functions that write an RTC register need the initialized module);
+  a repeated `Rtc_Init` does not take a second one, and a failed `Rtc_Init` releases the reference it took.
+  `Rtc_Deinit` releases it through `Pwr_Set_BackupAccessInactive`. The access of the Pwr module is reference counted,
+  so the reference of the Rtc module and the one of the Tamp module do not cancel each other; the protection is
+  enabled again when the last holder releases it. The Rcc module writes the same bit by itself (the LSE), which the Pwr
+  module accepts by design.
 - **LSE start-up.** The crystal needs hundreds of ms to seconds to start; the wait is bounded by the timeout of the RCC
   module and reported as an error. The LSI works without a crystal but its accuracy (a few percent) is not suited for a
   calendar - use it only for a rough time keeping or as a fallback chosen by the application.
